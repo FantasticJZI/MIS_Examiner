@@ -15,11 +15,11 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 DB_PATH = os.getenv("DB_PATH", "study_fortress.db")
-# 請確保 .env 裡名稱為 MIS_CHANNEL_ID
 MIS_CHANNEL_ID = int(os.getenv("MIS_CHANNEL_ID", 0))
 
 tw_tz = timezone(timedelta(hours=8))
 client = genai.Client(api_key=GEMINI_KEY)
+MODEL_NAME = "gemini-2.5-flash"  # ✨ 統一使用 2.5 flash
 
 
 # --- 2. 資料庫核心 ---
@@ -71,7 +71,7 @@ class AnswerModal(ui.Modal, title='📝 提交資管觀念挑戰'):
         最後一行格式：SCORE_DATA: {"score": 1-10, "is_related": bool}"""
         try:
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model=MODEL_NAME,
                 contents=f"題目：{self.today_q}\n回答：{self.answer.value}",
                 config={'system_instruction': instruction}
             )
@@ -92,8 +92,8 @@ class AnswerModal(ui.Modal, title='📝 提交資管觀念挑戰'):
             else:
                 await interaction.edit_original_response(content=ai_reply[:1900])
         except Exception as e:
-            print(f"批改失敗: {e}")
-            await interaction.edit_original_response(content="🚨 系統忙碌，請稍後再試。")
+            print(f"批改失敗: {e}");
+            await interaction.edit_original_response(content="🚨 系統忙碌")
 
 
 class ChallengeView(ui.View):
@@ -107,7 +107,7 @@ class ChallengeView(ui.View):
         await interaction.response.send_modal(AnswerModal(self.db, self.today_q))
 
 
-# --- 4. MIS 考官模組 (完全參照 CSIE 推送模式) ---
+# --- 4. 考官模組 (Examiner) ---
 class MIS_Examiner(commands.Cog):
     def __init__(self, bot, db):
         self.bot = bot
@@ -120,42 +120,71 @@ class MIS_Examiner(commands.Cog):
 
     async def push_question(self):
         channel = self.bot.get_channel(MIS_CHANNEL_ID)
-        if not channel:
-            print(f"❌ 找不到頻道 ID: {MIS_CHANNEL_ID}")
-            return
-
-        # 📚 針對資管所的科目設定
+        if not channel: return
         subjects = ["MIS管理資訊系統", "資料庫系統", "資料通訊與網路", "資訊安全管理"]
         target = random.choice(subjects)
         prompt = f"產出一題關於 {target} 的資管考研觀念題，50字內。"
-
         try:
-            res = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+            res = client.models.generate_content(model=MODEL_NAME, contents=prompt)
             q_text = res.text.strip()
-
             embed = discord.Embed(title="📊 資管每日觀念挑戰", description=f"**{q_text}**", color=0xe67e22)
-
-            # ✨ 完全參照 CSIE 模式：直接在頻道下建立 Thread
-            await channel.create_thread(
-                name=f"【資管挑戰】{datetime.date.today()} | {target}",
-                embed=embed,
-                view=ChallengeView(self.db, q_text)
-            )
-            print("✅ MIS 題目發布成功 (CSIE 模式)")
+            await channel.create_thread(name=f"【資管挑戰】{datetime.date.today()} | {target}", embed=embed,
+                                        view=ChallengeView(self.db, q_text))
         except Exception as e:
             print(f"🚨 MIS 產題失敗: {e}")
 
     @commands.command(name="mis_test")
     @commands.has_permissions(administrator=True)
     async def mis_test(self, ctx):
-        await ctx.send("⌛ 正在手動觸發測試...")
         await self.push_question()
 
 
-# --- 5. 排行榜系統 ---
+# --- 5. ✨ 自動家教模組 (Tutor Mode - 僅私訊觸發) ---
+class TutorCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.history = {}
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.author.bot: return
+
+        # ✨ 無需切換：如果是私訊，自動啟動家教
+        if isinstance(message.channel, discord.DMChannel):
+            async with message.channel.typing():
+                user_id = message.author.id
+                if user_id not in self.history: self.history[user_id] = []
+
+                self.history[user_id].append({"role": "user", "parts": [message.content]})
+
+                # 家教的人格設定
+                instruction = """你是一位專業的資管所考研專屬家教（由 Gemini 2.5 Flash 驅動）。
+                1. 語氣親切專業，擅長蘇格拉底引導法。
+                2. 學生問問題時，先引導其思考，再給予層次分明的解答。
+                3. 擅長將複雜技術觀念轉化為資管維度的商業應用場景。"""
+
+                try:
+                    chat = client.chats.create(
+                        model=MODEL_NAME,
+                        config={'system_instruction': instruction},
+                        history=self.history[user_id][:-1]
+                    )
+                    response = chat.send_message(message.content)
+                    self.history[user_id].append({"role": "model", "parts": [response.text]})
+
+                    # 記憶體控制
+                    if len(self.history[user_id]) > 10: self.history[user_id] = self.history[user_id][-10:]
+
+                    await message.reply(response.text)
+                except Exception as e:
+                    print(f"家教對話錯誤: {e}")
+                    await message.reply("🚨 導師目前正在休息，請稍後再詢問。")
+
+
+# --- 6. 排行榜系統 ---
 class RankingCog(commands.Cog):
     def __init__(self, bot, db):
-        self.bot = bot
+        self.bot = bot;
         self.db = db
 
     @commands.command(name="top")
@@ -183,28 +212,22 @@ class RankingCog(commands.Cog):
         await ctx.send(embed=embed)
 
 
-# --- 6. 啟動入口 ---
+# --- 7. 啟動入口 ---
 class MyBot(commands.Bot):
     def __init__(self):
+        # 確保 intents 包含訊息內容與私訊
         super().__init__(command_prefix="!", intents=discord.Intents.all())
         self.db = StudyDB(DB_PATH)
 
     async def setup_hook(self):
         await self.add_cog(MIS_Examiner(self, self.db))
         await self.add_cog(RankingCog(self, self.db))
+        await self.add_cog(TutorCog(self))
         self.add_view(ChallengeView(self.db, ""))
 
     async def on_ready(self):
-        print(f"🚀 {self.user.name} 診斷中...")
-        target = self.get_channel(MIS_CHANNEL_ID)
-        if target is None:
-            print(f"❌ 警告：機器人完全找不到 ID 為 {MIS_CHANNEL_ID} 的頻道！")
-        else:
-            perms = target.permissions_for(target.guild.me)
-            print(f"✅ 成功鎖定頻道：#{target.name}")
-            print(f"📍 頻道類型：{target.type}")
-            print(f"🛡️ 建立執行緒權限：{'有' if perms.create_public_threads else '無'}")
-            print(f"🛡️ 傳送訊息權限：{'有' if perms.send_messages else '無'}")
+        print(f"🚀 {self.user.name} 穩健版已啟動！")
+        print(f"📡 使用模型：{MODEL_NAME}")
 
 
 if __name__ == "__main__":
