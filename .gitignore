@@ -1,0 +1,35 @@
+# --- 🔒 安全與金鑰 (最重要！) ---
+.env
+*.env
+token.txt
+
+# --- 🗄️ 資料庫 (避免將本地測試數據推上雲端) ---
+*.db
+*.sqlite3
+# 如果你的 DB 檔名固定，可以直接寫：
+study_fortress.db
+
+# --- 🐍 Python 環境與快取 ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# --- ⚙️ 編輯器與系統檔案 ---
+.vscode/
+.idea/
+*.swp
+*.bak
+.DS_Store
+Thumbs.db
+
+# --- 📦 打包與發佈 ---
+dist/
+build/
+*.egg-info/
