@@ -19,14 +19,13 @@ MIS_CHANNEL_ID = int(os.getenv("MIS_CHANNEL_ID", 0))
 
 tw_tz = timezone(timedelta(hours=8))
 client = genai.Client(api_key=GEMINI_KEY)
+# ✨ 統一使用 2.5 Flash
 MODEL_NAME = "gemini-2.5-flash"
 
-# 📚 考研激勵金句庫 (資管與科技維度)
+# 📚 考研激勵金句庫
 MOTIVATIONAL_QUOTES = [
     "「預測未來最好的方法，就是去創造它。」— Peter Drucker",
     "「管理就是把事情做得正確；領導就是做正確的事情。」",
-    "「在資訊的海洋中，我們正在溺水，但卻渴求知識。」— John Naisbitt",
-    "「複雜的事情簡單化，簡單的事情標準化。」",
     "「考研不是為了擊敗別人，而是為了遇見更好的自己。」",
     "「技術會更迭，但邏輯思考與管理智慧是永遠的護城河。」",
     "「今天的每一分努力，都是在為未來的系統做最穩健的 Commit。」"
@@ -66,7 +65,7 @@ class StudyDB:
                 (user_id, xp_gain, today, xp_gain, today))
 
 
-# --- 3. UI 元件 (批改模式) ---
+# --- 3. UI 元件 (論壇批改) ---
 class AnswerModal(ui.Modal, title='📝 提交資管觀念挑戰'):
     answer = ui.TextInput(label='你的回答', style=discord.TextStyle.paragraph,
                           placeholder='孩子，寫下你的想法，導師幫你看看...', min_length=5, max_length=500)
@@ -119,7 +118,7 @@ class ChallengeView(ui.View):
         await interaction.response.send_modal(AnswerModal(self.db, self.today_q))
 
 
-# --- 4. 考官模組 (加上每日激勵金句) ---
+# --- 4. 考官模組 (論壇推送) ---
 class MIS_Examiner(commands.Cog):
     def __init__(self, bot, db):
         self.bot = bot;
@@ -135,19 +134,16 @@ class MIS_Examiner(commands.Cog):
         if not channel: return
         subjects = ["MIS管理資訊系統", "資料庫", "網路與資安", "數位轉型個案"]
         target = random.choice(subjects)
-        quote = random.choice(MOTIVATIONAL_QUOTES)  # ✨ 隨機挑選激勵金句
+        quote = random.choice(MOTIVATIONAL_QUOTES)
 
-        prompt = f"產出一題關於 {target} 的資管考研觀念題，50字內。語氣要像鼓勵學生挑戰的資研導師。"
+        prompt = f"產出一題關於 {target} 的資管考研觀念題，50字內。語氣要像鼓勵學生的資研導師。"
         try:
             res = client.models.generate_content(model=MODEL_NAME, contents=prompt)
             q_text = res.text.strip()
-
             embed = discord.Embed(title=f"📊 資管每日修行 | {target}", description=f"**{q_text}**", color=0xe67e22)
-            embed.set_footer(text=f"💡 今日金句：{quote}")  # ✨ 放在 Footer 激勵戰友
-
+            embed.set_footer(text=f"💡 今日金句：{quote}")
             await channel.create_thread(name=f"【資管修行】{datetime.date.today()}", embed=embed,
                                         view=ChallengeView(self.db, q_text))
-            print("✅ 每日考題與金句發布成功")
         except Exception as e:
             print(f"🚨 產題失敗: {e}")
 
@@ -157,11 +153,12 @@ class MIS_Examiner(commands.Cog):
         await self.push_question()
 
 
-# --- 5. ✨ 心靈導師 Cog (自動偵測私訊) ---
+# --- 5. ✨ 心靈導師 Cog (修正後的穩定對話版) ---
 class TutorCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.history = {}
+        # 儲存對話 Session 歷史
+        self.history_cache = {}
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -170,25 +167,44 @@ class TutorCog(commands.Cog):
         if isinstance(message.channel, discord.DMChannel):
             async with message.channel.typing():
                 user_id = message.author.id
-                if user_id not in self.history: self.history[user_id] = []
-                self.history[user_id].append({"role": "user", "parts": [message.content]})
 
-                instruction = """你是一位溫暖、專業且充滿同理心的資管所考研導師。
-                1. 情感支持：如果學生表現出疲憊、壓力大或離題聊生活，先給予共感，稱呼其為『孩子』或『戰友』。
-                2. 溫和導引：在給予心理支持後，試著將話題輕輕帶回 MIS、資料庫、資安等考科觀念。
-                3. 引導教學：使用蘇格拉底教學法，陪著學生思考，而非直接丟出冷冰冰的正確答案。"""
+                # 初始化歷史紀錄
+                if user_id not in self.history_cache:
+                    self.history_cache[user_id] = []
+
+                instruction = """你是一位暖心且專業的資管所考研導師（由 Gemini 2.5 Flash 驅動）。
+                - 情感支持：稱呼學生為『孩子』或『戰友』。如果離題聊生活或表現出壓力，請給予溫暖的共感。
+                - 溫和導引：在情緒支持後，溫和地將話題帶回 MIS、資料庫、網路或資安觀念。
+                - 蘇格拉底教學：多提問、多舉例，引導學生思考，不要直接丟答案。"""
 
                 try:
-                    chat = client.chats.create(model=MODEL_NAME, config={'system_instruction': instruction},
-                                               history=self.history[user_id][:-1])
+                    # ✨ 建立 Session 並同步之前的歷史
+                    chat = client.chats.create(
+                        model=MODEL_NAME,
+                        config={'system_instruction': instruction},
+                        history=self.history_cache[user_id]
+                    )
+
+                    # ✨ 發送新訊息
                     response = chat.send_message(message.content)
-                    self.history[user_id].append({"role": "model", "parts": [response.text]})
-                    if len(self.history[user_id]) > 12: self.history[user_id] = self.history[user_id][-12:]
+
+                    # ✨ 同步 chat.history 到快取 (這是維持連續對話的關鍵)
+                    self.history_cache[user_id] = chat.history
+
+                    # 記憶體管理：只保留最近 12 則
+                    if len(self.history_cache[user_id]) > 12:
+                        self.history_cache[user_id] = self.history_cache[user_id][-12:]
+
                     await message.reply(response.text)
+
                 except Exception as e:
-                    print(f"家教出錯: {e}")
-                    await message.reply(
-                        "抱歉孩子，導師現在腦袋有點打結，可能需要喝杯咖啡稍微深呼吸一下。☕\n你可以先翻一下筆記，我等等就回來陪你！")
+                    print(f"🚨 家教對話異常: {e}")
+                    error_hints = [
+                        "導師剛才喝咖啡不小心灑到筆記了，能請你再說一次剛才的問題嗎？☕",
+                        "抱歉孩子，剛才訊號有點斷斷續續，我沒聽清楚，我們可以重新聊聊嗎？",
+                        "導師現在腦袋稍微打結了，等我深呼吸一下，你再問我一次好嗎？"
+                    ]
+                    await message.reply(random.choice(error_hints))
 
 
 # --- 6. 排名系統 ---
@@ -223,7 +239,7 @@ class MyBot(commands.Bot):
         self.add_view(ChallengeView(self.db, ""))
 
     async def on_ready(self):
-        print(f"🚀 {self.user.name} 心靈導師版已上線 | 模型：{MODEL_NAME}")
+        print(f"🚀 {self.user.name} 心靈導師版已上線 | 模式：穩定家教對話")
 
 
 if __name__ == "__main__":
