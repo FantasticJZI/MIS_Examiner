@@ -2,6 +2,8 @@ import os
 import json
 import sqlite3
 import datetime
+import socket  # ✨ 新增：用於處理網路協定族
+import aiohttp  # ✨ 新增：用於自定義連線器
 from datetime import time, timezone, timedelta
 import random
 import asyncio
@@ -19,18 +21,17 @@ DB_PATH = os.getenv("DB_PATH", "study_fortress.db")
 MIS_CHANNEL_ID = int(os.getenv("MIS_CHANNEL_ID", 0))
 
 tw_tz = timezone(timedelta(hours=8))
-client = genai.Client(api_key=GEMINI_KEY)  # SDK 初始化
+client = genai.Client(api_key=GEMINI_KEY)
 MODEL_NAME = "gemini-2.5-flash"
 
 MOTIVATIONAL_QUOTES = [
     "「預測未來最好的方法，就是去創造它。」— Peter Drucker",
-    "「考研不是為了擊敗別人，而是為了遇見更好的自己。」",
     "「技術會更迭，但邏輯思考與管理智慧是永遠的護城河。」",
     "「今天的每一分努力，都是在為未來的系統做最穩健的 Commit。」"
 ]
 
 
-# --- 2. 資料庫核心 (與成就系統連動) ---
+# --- 2. 資料庫核心 ---
 class StudyDB:
     def __init__(self, path):
         db_dir = os.path.dirname(path)
@@ -63,7 +64,7 @@ class StudyDB:
                 (user_id, xp_gain, today, xp_gain, today))
 
 
-# --- 3. UI 元件 (非同步批改模式) ---
+# --- 3. UI 元件 (非同步批改) ---
 class AnswerModal(ui.Modal, title='📝 提交資管觀念挑戰'):
     answer = ui.TextInput(label='你的回答', style=discord.TextStyle.paragraph,
                           placeholder='寫下你的想法，導師幫你看看...', min_length=5, max_length=500)
@@ -77,10 +78,8 @@ class AnswerModal(ui.Modal, title='📝 提交資管觀念挑戰'):
         await interaction.response.send_message("⏳ 導師閱卷中，先喝口水吧...", ephemeral=True)
         instruction = "你是一位暖心且專業的資管所名師。請針對回答給予具備同理心的建議與專業詳解。最後一行格式：SCORE_DATA: {\"score\": 1-10, \"is_related\": bool}"
         try:
-            # ✨ 非同步 API 呼叫
             response = await client.aio.models.generate_content(
-                model=MODEL_NAME,
-                contents=f"題目：{self.today_q}\n回答：{self.answer.value}",
+                model=MODEL_NAME, contents=f"題目：{self.today_q}\n回答：{self.answer.value}",
                 config={'system_instruction': instruction}
             )
             ai_reply = response.text
@@ -115,7 +114,7 @@ class ChallengeView(ui.View):
         await interaction.response.send_modal(AnswerModal(self.db, self.today_q))
 
 
-# --- 4. 考官 Cog (論壇自動推送) ---
+# --- 4. 考官 Cog ---
 class MIS_Examiner(commands.Cog):
     def __init__(self, bot, db):
         self.bot = bot;
@@ -149,7 +148,7 @@ class MIS_Examiner(commands.Cog):
         await self.push_question()
 
 
-# --- 5. ✨ 心靈導師 Cog (穩定排版 + 非同步版) ---
+# --- 5. ✨ 心靈導師 Cog ---
 class TutorCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot;
@@ -166,11 +165,11 @@ class TutorCog(commands.Cog):
                 instruction = """你是一位具備『資管教授深度』與『戰友溫感』的考研導師。
                 【行為準則】
                 1. 暖心開場 (10%)、硬核解惑 (70%)、蘇格拉底引導 (20%)。
-                2. 正面解惑：必須給出『教科書等級』的精確定義與結構化詳解。
+                2. 正面解惑：必須給出結構化詳解。
                 【呈現規範】
                 - 嚴格禁止水平長串公式。
-                - 涉及計算或轉換，強制使用「垂直拆解」並放進「代碼塊 (Code Block)」對齊。
-                - 若有數學表示式請用純文字或 markdown 格式呈現。"""
+                - 涉及計算，強制使用「垂直拆解」並放進「代碼塊 (Code Block)」對齊。
+                - 回覆長度控制在繁體中文 600 字內。"""
 
                 api_contents = [{"role": e["role"], "parts": [{"text": e["content"]}]} for e in
                                 self.history_cache[user_id]]
@@ -195,7 +194,7 @@ class TutorCog(commands.Cog):
         await ctx.send("🧹 **導師記憶已重置！**")
 
 
-# --- 6. ✨ 視覺復原：排行榜與成就系統 ---
+# --- 6. 排行榜系統 ---
 class RankingCog(commands.Cog):
     def __init__(self, bot, db):
         self.bot = bot;
@@ -204,12 +203,9 @@ class RankingCog(commands.Cog):
     @commands.command(name="top")
     async def top(self, ctx):
         users = self.db.get_top_users(10)
-        desc = ""
-        for i, (uid, xp) in enumerate(users, 1):
-            user = self.bot.get_user(uid)
-            name = user.display_name if user else f"隱世高手({uid})"
-            medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-            desc += f"{medal} **{name}** — `{xp} XP` (Lv.{(xp // 100) + 1})\n"
+        desc = "".join([
+                           f"{'🥇' if i == 1 else '🥈' if i == 2 else '🥉' if i == 3 else f'{i}.'} **{self.bot.get_user(uid).display_name if self.bot.get_user(uid) else uid}** — `{xp} XP` (Lv.{(xp // 100) + 1})\n"
+                           for i, (uid, xp) in enumerate(users, 1)])
         await ctx.send(
             embed=discord.Embed(title="🏆 資管考研要塞：首席榜", description=desc or "目前無數據", color=0xf1c40f))
 
@@ -226,21 +222,23 @@ class RankingCog(commands.Cog):
         await ctx.send(embed=embed)
 
 
-# --- 7. 啟動入口 ---
+# --- 7. 啟動入口 (✨ 強化網路層) ---
 class MyBot(commands.Bot):
     def __init__(self):
+        # ✨ 強制 IPv4 連線器，解決 Railway 的 DNS/IPv6 逾時問題
+        connector = aiohttp.TCPConnector(family=socket.AF_INET)
         super().__init__(command_prefix="!", intents=discord.Intents.all())
+        self.http.connector = connector  # 注入連線器
         self.db = StudyDB(DB_PATH)
 
     async def setup_hook(self):
-        # 註冊所有模組
         await self.add_cog(MIS_Examiner(self, self.db))
         await self.add_cog(RankingCog(self, self.db))
         await self.add_cog(TutorCog(self))
         self.add_view(ChallengeView(self.db, ""))
 
     async def on_ready(self):
-        print(f"🚀 {self.user.name} 全功能非同步版已啟動！")
+        print(f"🚀 {self.user.name} 非同步+IPv4 加固版已啟動！")
 
 
 if __name__ == "__main__":
