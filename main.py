@@ -163,7 +163,7 @@ class MIS_Examiner(commands.Cog):
         self.db = db
         self.daily_task.start()
 
-    @tasks.loop(time=time(hour=8, minute=30, tzinfo=tw_tz))
+    @tasks.loop(time=time(hour=8, minute=0, tzinfo=tw_tz))
     async def daily_task(self):
         await self.push_question()
 
