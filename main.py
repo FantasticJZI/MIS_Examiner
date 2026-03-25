@@ -170,14 +170,14 @@ class MIS_Examiner(commands.Cog):
     async def push_question(self):
         channel = self.bot.get_channel(MIS_CHANNEL_ID)
         if not channel: return
-        target = random.choice(["MIS 觀念", "資料庫", "資訊安全", "數位轉型與策略"])
+        target = random.choice(["MIS 觀念", "資料結構", "資訊安全", "數位轉型與策略"])
         try:
-            prompt = f"""請產出一組關於『{target}』的資管考研『題組』。
+            prompt = f"""請產出一題關於『{target}』的資管考研『題組』。
             【要求】
-            1. 以『情境案例』或『多個關連知識點串接』形式命題。
-            2. 題目需具備深度，能引發思考，字數不限，但題數最多三題。。
-            3. 必須使用台灣繁體中文，絕對禁止簡體術語。
-            4. 呈現格式要清晰易讀。"""
+            1. 以『多個關連知識點串接』形式命題。
+            2. 題目需具備深度，能引發思考，難度為中偏易，字數不限。
+            3. 必須完全使用台灣繁體中文，絕對禁止簡體術語。
+            4. 呈現格式要清晰易讀，不要使用markdown格式。"""
 
             res = await groq_client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
